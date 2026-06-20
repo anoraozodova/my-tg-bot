@@ -4,7 +4,8 @@ import os
 token: str = os.environ.get("BOT_TOKEN", "")
 
 # Берем ID из настроек хостинга. Если там пусто — по умолчанию твой ID
-whitelist: list[int] | None = [int(os.environ.get("ADMIN_ID", 7253874622))]
+admin_env = os.environ.get("ADMIN_ID")
+whitelist: list[int] | None = [int(admin_env)] if admin_env else None
 
 blacklist: list[int] | None = None
 logs: int | None = None
