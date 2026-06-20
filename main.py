@@ -160,7 +160,9 @@ class MissingInfoError(Exception):
     pass
 
 
-def _send_media(message, info: Any, audio: bool, forward: bool = False) -> None:
+def _send_media(
+    message, info: Any, audio: bool, forward: bool = False, url: str | None = None
+) -> None:
     """Send the downloaded file back to the user via Telegram."""
 
     downloads = info.get("requested_downloads") or None
@@ -182,13 +184,19 @@ def _send_media(message, info: Any, audio: bool, forward: bool = False) -> None:
             )
             channel_id = forward_to
         if audio:
-            bot.send_audio(channel_id, f, reply_to_message_id=message.message_id)
+            bot.send_audio(
+                channel_id,
+                f,
+                reply_to_message_id=message.message_id,
+                caption=f"݁ ˖Ი𐑼⋆ {url}",
+            )
         else:
             bot.send_video(
                 channel_id,
                 f,
                 width=downloads[0]["width"],
                 height=downloads[0]["height"],
+                caption=f"݁ ˖Ი𐑼⋆ {url}",
             )
 
 
@@ -257,7 +265,11 @@ def check_url(content: str, message) -> dict:
 
 
 def enqueue_download(
-    message, content, audio: bool = False, format_id: str = "mp4", forward: bool = False
+    message,
+    content,
+    audio: bool = False,
+    format_id: str = "mp4",
+    forward: bool = False,
 ) -> None:
     forbidden = False
     if whitelist is not None and message.from_user.id not in whitelist:
@@ -405,7 +417,7 @@ def _perform_download(
 
         for send_attempt in range(max_retries + 1):
             try:
-                _send_media(message, info, audio, forward)
+                _send_media(message, info, audio, forward, url)
                 break
             except Exception as e:
                 if send_attempt < max_retries:
