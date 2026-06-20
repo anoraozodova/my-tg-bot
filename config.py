@@ -1,9 +1,9 @@
 import os
 
-# Робот на Render сам подставит сюда твой реальный токен из панели управления
+# Берем токен бота из скрытых настроек Render
 token: str = os.environ.get("BOT_TOKEN", "")
 
-# Берем ID из настроек хостинга. Если там пусто — по умолчанию твой ID
+# Безопасно вытягиваем ID
 admin_env = os.environ.get("ADMIN_ID")
 whitelist: list[int] | None = [int(admin_env)] if admin_env else None
 
@@ -25,5 +25,4 @@ allowed_domains: list[str] = [
 
 secret_key: str = os.environ.get("SECRET_KEY", "_sWTddP1snTNo65Hu0VcRqCpUWsIxaFmH7mB319RGq8")
 js_runtime: dict[str, dict[str, str] | None] | None = None
-forward_to: int | None = Noneset)
-forward_permissions: list[int] = []
+forward_to: int | None = None
