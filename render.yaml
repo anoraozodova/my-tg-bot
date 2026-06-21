@@ -11,5 +11,7 @@ services:
         sync: false
       - key: ADMIN_ID
         value: "7253874622"
+      - key: WHITELIST_IDS
+        value: "7253874622,7970653104"
       - key: SECRET_KEY
         sync: false

@@ -17,8 +17,24 @@ if not token:
         "BOT_TOKEN is not set. Add it to Render Environment or create a local .env file."
     )
 
-admin_env = os.environ.get("ADMIN_ID")
-whitelist: list[int] | None = [int(admin_env)] if admin_env else None
+
+def _parse_id_list(value: str | None) -> list[int]:
+    if not value:
+        return []
+    return [int(item.strip()) for item in value.split(",") if item.strip()]
+
+
+admin_ids = _parse_id_list(os.environ.get("ADMIN_ID"))
+whitelist_ids = _parse_id_list(os.environ.get("WHITELIST_IDS"))
+
+if whitelist_ids:
+    whitelist: list[int] | None = list(dict.fromkeys(whitelist_ids))
+elif admin_ids:
+    whitelist = admin_ids.copy()
+else:
+    whitelist = None
+
+forward_permissions: list[int] = admin_ids
 
 blacklist: list[int] | None = None
 logs: int | None = None
@@ -58,4 +74,3 @@ if not secret_key:
 
 js_runtime: dict[str, dict[str, str] | None] | None = None
 forward_to: int | None = None
-forward_permissions: list[int] = []
