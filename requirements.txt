@@ -1,0 +1,5 @@
+yt-dlp
+pyTelegramBotAPI
+requests
+cryptography
+flask
