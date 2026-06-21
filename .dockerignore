@@ -1,9 +1,8 @@
 __pycache__/
 *.pyc
 *.pyo
-config.py
+.env
 .git
 .gitignore
 README.md
 LICENSE
-example.config.py
