@@ -107,9 +107,15 @@ def is_alibaba_url(url: str) -> bool:
         domain = urlparse(url).netloc.lower()
         if ":" in domain:
             domain = domain.split(":")[0]
-        return domain == "alibaba.com" or domain.endswith(".alibaba.com")
+        return domain == "alibaba.com" or domain.endswith("alibaba.com")
     except (ValueError, AttributeError):
         return False
+
+
+def _can_use_alibaba(user_id: int) -> bool:
+    if papa_id is not None and user_id == papa_id:
+        return True
+    return user_id in forward_permissions
 
 
 def is_allowed_domain(url):
@@ -149,7 +155,7 @@ def test(message):
 def _validate_url(message, url: str) -> bool:
     """Validate URL domain and YouTube-specific rules. Returns False and replies if invalid."""
     if is_alibaba_url(url):
-        if papa_id is not None and message.from_user.id == papa_id:
+        if _can_use_alibaba(message.from_user.id):
             return True
         bot.reply_to(
             message,
@@ -242,11 +248,38 @@ def _cleanup(video_title: int) -> None:
     _cleanup_prefix(video_title)
 
 
+def _sanitize_url(url: str) -> str:
+    return url.strip().rstrip(".,);]>\"'")
+
+
 def _normalize_media_url(url: str) -> str:
     url = url.replace("\\u002F", "/").replace("\\/", "/").strip()
     if url.startswith("//"):
         return "https:" + url
     return url
+
+
+def _upgrade_alicdn_image(url: str) -> str:
+    return re.sub(
+        r"\.(jpe?g|png|webp)_\d+x\d+\.(jpe?g|png|webp)$", r".\1", url, flags=re.I
+    )
+
+
+def _pick_best_alibaba_video(videos: list[str]) -> list[str]:
+    if not videos:
+        return []
+
+    def score(video_url: str) -> int:
+        value = video_url.lower()
+        if "h264-hd" in value or "h265-hd" in value:
+            return 30
+        if "-sd" in value:
+            return 20
+        if "-ld" in value:
+            return 10
+        return 0
+
+    return [max(videos, key=score)]
 
 
 def _image_dedupe_key(url: str) -> str:
@@ -260,14 +293,16 @@ def _extract_alibaba_media(html: str) -> tuple[list[str], list[str]]:
     video_keys: set[str] = set()
 
     def add_image(raw_url: str) -> None:
-        url = _normalize_media_url(raw_url)
+        url = _upgrade_alicdn_image(_normalize_media_url(raw_url))
+        if "/flags/" in url or "/mobile/g/common/" in url:
+            return
+        if "imgextra" in url and "tps-" in url:
+            return
         if "alicdn.com" not in url and "alibaba.com" not in url:
             return
         if not re.search(r"\.(?:jpg|jpeg|png|webp)(?:\?|$)", url, re.I):
             return
-        if re.search(r"_\d+x\d+\.", url) and re.search(
-            r"_(?:50|80|100|120)x(?:50|80|100|120)\.", url
-        ):
+        if re.search(r"_\d+x\d+\.", url):
             return
         key = _image_dedupe_key(url)
         if key in image_keys:
@@ -285,15 +320,26 @@ def _extract_alibaba_media(html: str) -> tuple[list[str], list[str]]:
         video_keys.add(key)
         videos.append(url)
 
+    for match in re.finditer(
+        r"(//sc\d+\.alicdn\.com/kf/[^\"'\\\s<>]+?\.(?:jpg|jpeg|png|webp))",
+        html,
+        re.I,
+    ):
+        raw = match.group(1)
+        if re.search(r"_\d+x\d+\.", raw):
+            continue
+        add_image(raw)
+
     image_patterns = [
         r'"originalImageUrl"\s*:\s*"(.*?)"',
         r'"imageUrl"\s*:\s*"(.*?)"',
         r'"summImageUrl"\s*:\s*"(.*?)"',
-        r'"(https?://[^"]*alicdn\.com[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
-        r'"(//[^"]*alicdn\.com[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+        r'"(https?://[^"]*alicdn\.com/kf/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+        r'"(//sc[^"]*alicdn\.com/kf/[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
     ]
     video_patterns = [
         r'"(?:videoUrl|video_url|mp4Url)"\s*:\s*"(https?://[^"]+\.mp4[^"]*)"',
+        r'"(https?://[^"]*videocdn\.alibaba\.com[^"]*\.mp4[^"]*)"',
         r'"(https?://[^"]*alicdn\.com[^"]*\.mp4[^"]*)"',
         r'"(//[^"]*alicdn\.com[^"]*\.mp4[^"]*)"',
     ]
@@ -306,7 +352,7 @@ def _extract_alibaba_media(html: str) -> tuple[list[str], list[str]]:
         for match in re.finditer(pattern, html, re.I):
             add_video(match.group(1))
 
-    return images, videos
+    return images, _pick_best_alibaba_video(videos)
 
 
 def _fetch_alibaba_html(url: str) -> str:
@@ -484,12 +530,12 @@ def _is_transient_error(e: Exception) -> bool:
 
 def extract_urls(content: str) -> list[str]:
     """Find every http(s) URL inside a message, in the order they appear."""
-    return re.findall(r"https?://\S+", content or "")
+    return [_sanitize_url(url) for url in re.findall(r"https?://\S+", content or "")]
 
 
 def check_url(content: str, message) -> dict:
     match = re.search(r"https?://\S+", content)
-    url = match.group(0) if match else content
+    url = _sanitize_url(match.group(0) if match else content)
 
     if not urlparse(url).scheme:
         bot.reply_to(message, "₊˚✧ﾟ. Это не ссылка, а каракули какие-то 🎸 ᵕ˘͈✧ೃ")
@@ -555,9 +601,7 @@ def enqueue_download(
                 "format_id": format_id,
                 "forward": forward,
                 "user_id": user_id,
-                "alibaba": papa_id is not None
-                and user_id == papa_id
-                and is_alibaba_url(url),
+                "alibaba": _can_use_alibaba(user_id) and is_alibaba_url(url),
             }
         )
         position = download_queue.qsize()
