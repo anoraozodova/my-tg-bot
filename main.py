@@ -33,6 +33,7 @@ retry_delay = getattr(config, "retry_delay", 5)
 allowed_domains = getattr(config, "allowed_domains", [])
 forward_to: int | None = getattr(config, "forward_to", None)
 forward_permissions: list[int] = getattr(config, "forward_permissions", [])
+papa_id: int | None = getattr(config, "papa_id", None)
 
 if max_user_concurrent_downloads < 1:
     max_user_concurrent_downloads = 1
@@ -57,6 +58,15 @@ db_cursor.execute("""
 db_conn.commit()
 
 ses = requests.Session()
+ses.headers.update(
+    {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+)
 bot = telebot.TeleBot(config.token)
 last_edited = {}
 download_queue: Queue[dict] = Queue()
@@ -90,6 +100,16 @@ def youtube_url_validation(url):
         return youtube_regex_match
 
     return youtube_regex_match
+
+
+def is_alibaba_url(url: str) -> bool:
+    try:
+        domain = urlparse(url).netloc.lower()
+        if ":" in domain:
+            domain = domain.split(":")[0]
+        return domain == "alibaba.com" or domain.endswith(".alibaba.com")
+    except (ValueError, AttributeError):
+        return False
 
 
 def is_allowed_domain(url):
@@ -128,6 +148,15 @@ def test(message):
 
 def _validate_url(message, url: str) -> bool:
     """Validate URL domain and YouTube-specific rules. Returns False and replies if invalid."""
+    if is_alibaba_url(url):
+        if papa_id is not None and message.from_user.id == papa_id:
+            return True
+        bot.reply_to(
+            message,
+            "( :: 🏷) Это что вообще такое Я работаю только с ютуб тикток инста твитер и блускай нот май стайл 𖦹°‧𓆝",
+        )
+        return False
+
     if not is_allowed_domain(url):
         bot.reply_to(
             message,
@@ -201,11 +230,218 @@ def _send_media(
             )
 
 
-def _cleanup(video_title: int) -> None:
+def _cleanup_prefix(prefix: int | str) -> None:
     """Remove all files in the output folder that belong to this download."""
+    prefix_str = str(prefix)
     for file in os.listdir(config.output_folder):
-        if file.startswith(str(video_title)):
+        if file.startswith(prefix_str):
             os.remove(os.path.join(config.output_folder, file))
+
+
+def _cleanup(video_title: int) -> None:
+    _cleanup_prefix(video_title)
+
+
+def _normalize_media_url(url: str) -> str:
+    url = url.replace("\\u002F", "/").replace("\\/", "/").strip()
+    if url.startswith("//"):
+        return "https:" + url
+    return url
+
+
+def _image_dedupe_key(url: str) -> str:
+    return re.sub(r"_\d+x\d+", "", url.split("?")[0])
+
+
+def _extract_alibaba_media(html: str) -> tuple[list[str], list[str]]:
+    images: list[str] = []
+    videos: list[str] = []
+    image_keys: set[str] = set()
+    video_keys: set[str] = set()
+
+    def add_image(raw_url: str) -> None:
+        url = _normalize_media_url(raw_url)
+        if "alicdn.com" not in url and "alibaba.com" not in url:
+            return
+        if not re.search(r"\.(?:jpg|jpeg|png|webp)(?:\?|$)", url, re.I):
+            return
+        if re.search(r"_\d+x\d+\.", url) and re.search(
+            r"_(?:50|80|100|120)x(?:50|80|100|120)\.", url
+        ):
+            return
+        key = _image_dedupe_key(url)
+        if key in image_keys:
+            return
+        image_keys.add(key)
+        images.append(url)
+
+    def add_video(raw_url: str) -> None:
+        url = _normalize_media_url(raw_url)
+        if ".mp4" not in url.lower():
+            return
+        key = url.split("?")[0]
+        if key in video_keys:
+            return
+        video_keys.add(key)
+        videos.append(url)
+
+    image_patterns = [
+        r'"originalImageUrl"\s*:\s*"(.*?)"',
+        r'"imageUrl"\s*:\s*"(.*?)"',
+        r'"summImageUrl"\s*:\s*"(.*?)"',
+        r'"(https?://[^"]*alicdn\.com[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+        r'"(//[^"]*alicdn\.com[^"]+\.(?:jpg|jpeg|png|webp)[^"]*)"',
+    ]
+    video_patterns = [
+        r'"(?:videoUrl|video_url|mp4Url)"\s*:\s*"(https?://[^"]+\.mp4[^"]*)"',
+        r'"(https?://[^"]*alicdn\.com[^"]*\.mp4[^"]*)"',
+        r'"(//[^"]*alicdn\.com[^"]*\.mp4[^"]*)"',
+    ]
+
+    for pattern in image_patterns:
+        for match in re.finditer(pattern, html, re.I):
+            add_image(match.group(1))
+
+    for pattern in video_patterns:
+        for match in re.finditer(pattern, html, re.I):
+            add_video(match.group(1))
+
+    return images, videos
+
+
+def _fetch_alibaba_html(url: str) -> str:
+    response = ses.get(url, timeout=60, allow_redirects=True)
+    response.raise_for_status()
+    html = response.text
+    images, videos = _extract_alibaba_media(html)
+    if images or videos:
+        return html
+
+    parsed = urlparse(response.url)
+    if parsed.netloc.startswith("m."):
+        return html
+
+    mobile_url = response.url.replace("://www.", "://m.").replace(
+        "://alibaba.com", "://m.alibaba.com"
+    )
+    if mobile_url == response.url:
+        return html
+
+    mobile_response = ses.get(mobile_url, timeout=60, allow_redirects=True)
+    mobile_response.raise_for_status()
+    return mobile_response.text
+
+
+def _download_remote_file(url: str, dest: str) -> bool:
+    try:
+        response = ses.get(url, timeout=60, stream=True)
+        response.raise_for_status()
+        size = 0
+        with open(dest, "wb") as f:
+            for chunk in response.iter_content(chunk_size=65536):
+                if not chunk:
+                    continue
+                size += len(chunk)
+                if size > max_filesize:
+                    return False
+                f.write(chunk)
+        return size > 0
+    except requests.RequestException:
+        return False
+
+
+def _perform_alibaba_download(message, url: str) -> None:
+    msg = bot.reply_to(message, "📦 Смотрю товар на Alibaba...")
+    download_prefix = round(time.time() * 1000)
+    saved_files: list[str] = []
+
+    try:
+        html = _fetch_alibaba_html(url)
+        images, videos = _extract_alibaba_media(html)
+        if not images and not videos:
+            bot.edit_message_text(
+                "𓏲⋆ На странице не нашла фото и видео товара, попробуй другую ссылку 📅",
+                message.chat.id,
+                msg.message_id,
+            )
+            return
+
+        chat_id = message.chat.id
+        sent_any = False
+
+        for index, video_url in enumerate(videos):
+            path = os.path.join(
+                config.output_folder, f"{download_prefix}_v{index}.mp4"
+            )
+            if not _download_remote_file(video_url, path):
+                continue
+            saved_files.append(path)
+            with open(path, "rb") as video_file:
+                bot.send_video(
+                    chat_id,
+                    video_file,
+                    reply_to_message_id=message.message_id,
+                    caption=f"݁ ˖Ი𐑼⋆ {url}",
+                )
+            sent_any = True
+
+        image_paths: list[str] = []
+        for index, image_url in enumerate(images[:40]):
+            ext_match = re.search(r"\.(jpg|jpeg|png|webp)", image_url, re.I)
+            ext = f".{ext_match.group(1).lower()}" if ext_match else ".jpg"
+            path = os.path.join(
+                config.output_folder, f"{download_prefix}_i{index}{ext}"
+            )
+            if not _download_remote_file(image_url, path):
+                continue
+            saved_files.append(path)
+            image_paths.append(path)
+
+        if image_paths:
+            for start in range(0, len(image_paths), 10):
+                chunk = image_paths[start : start + 10]
+                media_group: list[types.InputMediaPhoto] = []
+                opened_files = []
+                try:
+                    for image_path in chunk:
+                        image_file = open(image_path, "rb")
+                        opened_files.append(image_file)
+                        media_group.append(types.InputMediaPhoto(image_file))
+                    bot.send_media_group(
+                        chat_id,
+                        media_group,
+                        reply_to_message_id=message.message_id if start == 0 else None,
+                    )
+                finally:
+                    for image_file in opened_files:
+                        image_file.close()
+            sent_any = True
+
+        if not sent_any:
+            bot.edit_message_text(
+                "𓏲⋆ Нашла ссылки, но скачать не вышло — попробуй позже 📅",
+                message.chat.id,
+                msg.message_id,
+            )
+            return
+
+        bot.delete_message(message.chat.id, msg.message_id)
+    except requests.RequestException as e:
+        print(f"Alibaba fetch error for {url}: {e}")
+        bot.edit_message_text(
+            "༉‧✰ Не смогла открыть страницу Alibaba, попробуй позже ◟♪◝⊹",
+            message.chat.id,
+            msg.message_id,
+        )
+    except Exception as e:
+        print(f"Alibaba download error for {url}: {e}")
+        bot.edit_message_text(
+            "༉‧✰ что то пошло не так но все нипочём, когда в тебе не воспитали чувство гордости ◟♪◝⊹",
+            message.chat.id,
+            msg.message_id,
+        )
+    finally:
+        _cleanup_prefix(download_prefix)
 
 
 def _is_transient_error(e: Exception) -> bool:
@@ -319,6 +555,9 @@ def enqueue_download(
                 "format_id": format_id,
                 "forward": forward,
                 "user_id": user_id,
+                "alibaba": papa_id is not None
+                and user_id == papa_id
+                and is_alibaba_url(url),
             }
         )
         position = download_queue.qsize()
@@ -492,13 +731,16 @@ def _download_worker() -> None:
                 del queued_user_downloads[user_id]
 
         try:
-            _perform_download(
-                task["message"],
-                task["url"],
-                task["audio"],
-                task["format_id"],
-                task["forward"],
-            )
+            if task.get("alibaba"):
+                _perform_alibaba_download(task["message"], task["url"])
+            else:
+                _perform_download(
+                    task["message"],
+                    task["url"],
+                    task["audio"],
+                    task["format_id"],
+                    task["forward"],
+                )
         finally:
             with queue_lock:
                 active_global_downloads -= 1

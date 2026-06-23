@@ -13,5 +13,7 @@ services:
         value: "7253874622"
       - key: WHITELIST_IDS
         value: "7253874622,7970653104"
+      - key: PAPA_ID
+        value: "596505945"
       - key: SECRET_KEY
         sync: false

@@ -36,6 +36,11 @@ else:
 
 forward_permissions: list[int] = admin_ids
 
+papa_env = os.environ.get("PAPA_ID")
+papa_id: int | None = int(papa_env) if papa_env else None
+if papa_id:
+    whitelist = list(dict.fromkeys((whitelist or []) + [papa_id]))
+
 blacklist: list[int] | None = None
 logs: int | None = None
 max_filesize: int = 50000000
