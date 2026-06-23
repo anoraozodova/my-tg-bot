@@ -33,7 +33,6 @@ retry_delay = getattr(config, "retry_delay", 5)
 allowed_domains = getattr(config, "allowed_domains", [])
 forward_to: int | None = getattr(config, "forward_to", None)
 forward_permissions: list[int] = getattr(config, "forward_permissions", [])
-papa_id: int | None = getattr(config, "papa_id", None)
 
 if max_user_concurrent_downloads < 1:
     max_user_concurrent_downloads = 1
@@ -64,7 +63,7 @@ ses.headers.update(
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
             "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
         ),
-        "Accept-Language": "en-US,en;q=0.9",
+        "Accept-Language": "en-US,en;q=0.9,uz;q=0.8,ru;q=0.7",
     }
 )
 bot = telebot.TeleBot(config.token)
@@ -107,15 +106,9 @@ def is_alibaba_url(url: str) -> bool:
         domain = urlparse(url).netloc.lower()
         if ":" in domain:
             domain = domain.split(":")[0]
-        return domain == "alibaba.com" or domain.endswith("alibaba.com")
+        return domain == "alibaba.com" or domain.endswith(".alibaba.com")
     except (ValueError, AttributeError):
         return False
-
-
-def _can_use_alibaba(user_id: int) -> bool:
-    if papa_id is not None and user_id == papa_id:
-        return True
-    return user_id in forward_permissions
 
 
 def is_allowed_domain(url):
@@ -155,13 +148,7 @@ def test(message):
 def _validate_url(message, url: str) -> bool:
     """Validate URL domain and YouTube-specific rules. Returns False and replies if invalid."""
     if is_alibaba_url(url):
-        if _can_use_alibaba(message.from_user.id):
-            return True
-        bot.reply_to(
-            message,
-            "( :: 🏷) Это что вообще такое Я работаю только с ютуб тикток инста твитер и блускай нот май стайл 𖦹°‧𓆝",
-        )
-        return False
+        return True
 
     if not is_allowed_domain(url):
         bot.reply_to(
@@ -355,6 +342,18 @@ def _extract_alibaba_media(html: str) -> tuple[list[str], list[str]]:
     return images, _pick_best_alibaba_video(videos)
 
 
+def _alibaba_mobile_url(url: str) -> str | None:
+    parsed = urlparse(url)
+    host = parsed.netloc.lower().split(":")[0]
+    if host.startswith("m."):
+        return None
+    if host in ("alibaba.com", "www.alibaba.com"):
+        return parsed._replace(netloc="m.alibaba.com").geturl()
+    if host.endswith(".alibaba.com"):
+        return parsed._replace(netloc=f"m.{host}").geturl()
+    return None
+
+
 def _fetch_alibaba_html(url: str) -> str:
     response = ses.get(url, timeout=60, allow_redirects=True)
     response.raise_for_status()
@@ -363,14 +362,8 @@ def _fetch_alibaba_html(url: str) -> str:
     if images or videos:
         return html
 
-    parsed = urlparse(response.url)
-    if parsed.netloc.startswith("m."):
-        return html
-
-    mobile_url = response.url.replace("://www.", "://m.").replace(
-        "://alibaba.com", "://m.alibaba.com"
-    )
-    if mobile_url == response.url:
+    mobile_url = _alibaba_mobile_url(response.url)
+    if not mobile_url:
         return html
 
     mobile_response = ses.get(mobile_url, timeout=60, allow_redirects=True)
@@ -601,7 +594,7 @@ def enqueue_download(
                 "format_id": format_id,
                 "forward": forward,
                 "user_id": user_id,
-                "alibaba": _can_use_alibaba(user_id) and is_alibaba_url(url),
+                "alibaba": is_alibaba_url(url),
             }
         )
         position = download_queue.qsize()
