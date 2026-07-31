@@ -6,6 +6,7 @@ import re
 import sqlite3
 import threading
 import time
+import traceback
 from queue import Queue
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -722,9 +723,30 @@ def _perform_download(
     except (DownloadError, ExtractorError) as e:
         err = str(e).lower()
         text: str
+        is_instagram = "instagram.com" in url.lower()
+
+        print(f"Download error for {url}: {type(e).__name__}: {e}")
+        notify_admin_error(url, e)
+
+        auth_phrases = [
+            "login required",
+            "rate-limit reached",
+            "restricted video",
+            "not available",
+            "unable to extract shared_data",
+            "unable to fetch",
+            "no video formats found",
+            "requested content is not available",
+            "empty media response",
+        ]
 
         if "[youtube]" in err and "sign in" in err:
             text = "˚𖡼𖤣 YouTube сегодня в плохом настроении и всех банит, попробуй позже 彡⋆⭒"
+        elif is_instagram and any(phrase in err for phrase in auth_phrases):
+            text = (
+                "🪐 Инста просит логин или забанила по IP. Пришли мне куки инстаграма "
+                "командой /cookies (файл cookies.txt), тогда должно заработать 🍥"
+            )
         elif "login required" in err or "rate-limit reached" in err:
             text = "🪐 Настроено, но не в настроении. то ли нужен логин, то ли я словила бан. ⁺˚✧ﾟ."
         else:
@@ -738,7 +760,9 @@ def _perform_download(
             msg.message_id,
         )
     except Exception as e:
-        print(f"Unexpected error for {url}: {e}")
+        print(f"Unexpected error for {url}: {type(e).__name__}: {e}")
+        traceback.print_exc()
+        notify_admin_error(url, e)
         bot.edit_message_text(
             "༉‧✰ что то пошло не так но все нипочём, когда в тебе не воспитали чувство гордости ◟♪◝⊹",
             message.chat.id,
@@ -787,6 +811,20 @@ def _download_worker() -> None:
                 if active_user_downloads[user_id] == 0:
                     del active_user_downloads[user_id]
             download_queue.task_done()
+
+
+def notify_admin_error(url: str, e: Exception) -> None:
+    """Send the real exception text to admins so failures can actually be diagnosed."""
+    admin_ids = getattr(config, "admin_ids", None) or []
+    if not admin_ids:
+        return
+    err_text = f"{type(e).__name__}: {e}"
+    text = f"⚠️ Download failed\nURL: {url}\n\n{err_text[:1500]}"
+    for admin_id in admin_ids:
+        try:
+            bot.send_message(admin_id, text)
+        except Exception as notify_err:
+            print(f"Failed to notify admin {admin_id}: {notify_err}")
 
 
 def log(message, text: str, media: str):
