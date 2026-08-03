@@ -30,6 +30,11 @@ max_filesize = getattr(config, "max_filesize", 50000000)
 max_user_concurrent_downloads = getattr(config, "max_user_concurrent_downloads", 1)
 max_global_concurrent_downloads = getattr(config, "max_global_concurrent_downloads", 2)
 max_retries = getattr(config, "max_retries", 3)
+
+# Set to True temporarily to receive the exact exception text for a failed
+# download in your admin DM. Off by default so expected/known failures
+# (e.g. TikTok being blocked in some regions) don't spam admins.
+NOTIFY_ADMIN_ON_ERROR = False
 retry_delay = getattr(config, "retry_delay", 5)
 allowed_domains = getattr(config, "allowed_domains", [])
 forward_to: int | None = getattr(config, "forward_to", None)
@@ -218,8 +223,8 @@ def _send_media(
             bot.send_video(
                 channel_id,
                 f,
-                width=downloads[0]["width"],
-                height=downloads[0]["height"],
+                width=downloads[0].get("width") or None,
+                height=downloads[0].get("height") or None,
                 caption=f"݁ ˖Ი𐑼⋆ {url}",
             )
 
@@ -607,6 +612,70 @@ def enqueue_download(
         )
 
 
+_START_MESSAGE = (
+    "   /)/)\n"
+    " (  . .) \"eatz\"\n"
+    " /づ🍥\n\n"
+    "   /)/)       (\\\(\\\n"
+    " (  • •)?   (• •  ) can i pwease eat that too\n"
+    " /づ🍥      vv \\\n\n"
+    "  (\\\(\\\         (\\\(\\\n"
+    " (  • •)No.(• •  )\n"
+    " 🍥⊂\\\       vv \\\n\n"
+    "  (\\\(\\\  (\\\(\\\n"
+    " (  • •)(• •  ) give me that!\n"
+    " 🍥⊂\\\   ⊂ \\\n\n"
+    "   /)/)            (\\\(\\\n"
+    " ( 0 0) Noo! (. .  )\n"
+    " /  づ            🍥⊂\\\n"
+    " \"sad\"\n"
+    "  /)/)            (\\\(\\\n"
+    "(  . .)''          (• •  )\n"
+    "/ vv              🍥⊂\\\n\n"
+    "  /)/)      (\\\(\\\n"
+    "(  • •)?   (. .  ) Ok fine, u can have it.\n"
+    "/ vv      🍥⊂\\\n\n"
+    "  /)/)         (\\\(\\\n"
+    "(  ᵔ ᵔ)thx! (. .  )''\n"
+    "/ づ🍥       vv \\\n\n"
+    " btw we can share if u want!\n"
+    "  /)/)         (\\\(\\\n"
+    "(  ᵔ ᵔ)        (• • ) huh..?\n"
+    "/ づ🍥       vv \\\n\n"
+    "  /)/) (\\(\\\n"
+    "( ᵔ ᵔ) (ᵔ ᵔ ) okay!\n"
+    "/ づ🍥⊂ \\"
+)
+
+
+def _reply_start_message(message):
+    """Reply with the 'starting download' message.
+
+    Sending several links back-to-back (e.g. forwarding a batch of
+    Instagram reels) can trigger Telegram flood control on this call.
+    That used to raise uncaught out of `_perform_download`, which killed
+    the worker thread that ran it permanently — so the queue kept growing
+    and nothing downloaded ever again. Retry a couple of times with a
+    short backoff, then fall back to a plain short message instead of
+    letting a transient Telegram error take down the whole worker.
+    """
+    last_err: Exception | None = None
+    for attempt in range(3):
+        try:
+            return bot.reply_to(message, _START_MESSAGE)
+        except Exception as e:
+            last_err = e
+            print(f"reply_to retry {attempt + 1}/3 failed: {e}")
+            time.sleep(2 * (attempt + 1))
+
+    try:
+        return bot.reply_to(message, "⏳ Качаю...")
+    except Exception:
+        if last_err:
+            raise last_err
+        raise
+
+
 def _perform_download(
     message,
     url: str,
@@ -614,41 +683,7 @@ def _perform_download(
     format_id: str = "mp4",
     forward: bool = False,
 ) -> None:
-    msg = bot.reply_to(
-        message,
-        "   /)/)\n"
-        " (  . .) \"eatz\"\n"
-        " /づ🍥\n\n"
-        "   /)/)       (\\\(\\\n"
-        " (  • •)?   (• •  ) can i pwease eat that too\n"
-        " /づ🍥      vv \\\n\n"
-        "  (\\\(\\\         (\\\(\\\n"
-        " (  • •)No.(• •  )\n"
-        " 🍥⊂\\\       vv \\\n\n"
-        "  (\\\(\\\  (\\\(\\\n"
-        " (  • •)(• •  ) give me that!\n"
-        " 🍥⊂\\\   ⊂ \\\n\n"
-        "   /)/)            (\\\(\\\n"
-        " ( 0 0) Noo! (. .  )\n"
-        " /  づ            🍥⊂\\\n"
-        " \"sad\"\n"
-        "  /)/)            (\\\(\\\n"
-        "(  . .)''          (• •  )\n"
-        "/ vv              🍥⊂\\\n\n"
-        "  /)/)      (\\\(\\\n"
-        "(  • •)?   (. .  ) Ok fine, u can have it.\n"
-        "/ vv      🍥⊂\\\n\n"
-        "  /)/)         (\\\(\\\n"
-        "(  ᵔ ᵔ)thx! (. .  )''\n"
-        "/ づ🍥       vv \\\n\n"
-        " btw we can share if u want!\n"
-        "  /)/)         (\\\(\\\n"
-        "(  ᵔ ᵔ)        (• • ) huh..?\n"
-        "/ づ🍥       vv \\\n\n"
-        "  /)/) (\\(\\\n"
-        "( ᵔ ᵔ) (ᵔ ᵔ ) okay!\n"
-        "/ づ🍥⊂ \\"
-    )
+    msg = _reply_start_message(message)
     video_title = round(time.time() * 1000)
 
     ydl_opts: yt_dlp._Params = {
@@ -659,6 +694,10 @@ def _perform_download(
         "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}]
         if audio
         else [],
+        "socket_timeout": 30,
+        "retries": 10,
+        "fragment_retries": 10,
+        "extractor_retries": 5,
     }
 
     if js_runtime is not None:
@@ -802,6 +841,14 @@ def _download_worker() -> None:
                     task["format_id"],
                     task["forward"],
                 )
+        except Exception as e:
+            # A worker thread must never die: an uncaught exception here
+            # (e.g. a Telegram flood-control error while replying) used to
+            # kill this thread permanently, so the queue kept growing and
+            # nothing ever downloaded again.
+            print(f"Worker error for {task['url']}: {type(e).__name__}: {e}")
+            traceback.print_exc()
+            notify_admin_error(task["url"], e)
         finally:
             with queue_lock:
                 active_global_downloads -= 1
@@ -814,7 +861,15 @@ def _download_worker() -> None:
 
 
 def notify_admin_error(url: str, e: Exception) -> None:
-    """Send the real exception text to admins so failures can actually be diagnosed."""
+    """Send the real exception text to admins so failures can actually be diagnosed.
+
+    Disabled by default to avoid spamming admins on every known/expected
+    failure (e.g. TikTok being blocked in some regions). Flip
+    NOTIFY_ADMIN_ON_ERROR to True temporarily when you need to see the
+    real error text for a new/unknown problem.
+    """
+    if not NOTIFY_ADMIN_ON_ERROR:
+        return
     admin_ids = getattr(config, "admin_ids", None) or []
     if not admin_ids:
         return
