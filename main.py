@@ -698,6 +698,7 @@ def _perform_download(
         "retries": 10,
         "fragment_retries": 10,
         "extractor_retries": 5,
+        "impersonate": "chrome",
     }
 
     if js_runtime is not None:

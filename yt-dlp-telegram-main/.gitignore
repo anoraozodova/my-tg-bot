@@ -1,7 +1,0 @@
-outputs
-__pycache__
-.env
-test.json
-venv
-.DS_Store
-db.db
