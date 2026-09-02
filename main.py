@@ -769,6 +769,7 @@ def _perform_download(
         err = str(e).lower()
         text: str
         is_instagram = "instagram.com" in url.lower()
+        is_tiktok = "tiktok.com" in url.lower()
 
         print(f"Download error for {url}: {type(e).__name__}: {e}")
         notify_admin_error(url, e)
@@ -787,6 +788,12 @@ def _perform_download(
 
         if "[youtube]" in err and "sign in" in err:
             text = "˚𖡼𖤣 YouTube сегодня в плохом настроении и всех банит, попробуй позже 彡⋆⭒"
+        elif is_tiktok and (
+            "unexpected response from webpage request" in err
+            or "unable to extract webpage video data" in err
+            or "solve_challenge" in err
+        ):
+            text = "🎪 ТикТок сейчас барахлит на своей стороне, я тут ни при чём — попробуй чуть позже 🍥"
         elif is_instagram and any(phrase in err for phrase in auth_phrases):
             text = (
                 "🪐 Инста просит логин или забанила по IP. Пришли мне куки инстаграма "
