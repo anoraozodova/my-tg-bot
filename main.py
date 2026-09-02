@@ -686,18 +686,27 @@ def _perform_download(
     msg = _reply_start_message(message)
     video_title = round(time.time() * 1000)
 
-    ydl_opts: yt_dlp._Params = {
-        "format": format_id,
-        "outtmpl": f"{config.output_folder}/{video_title}.%(ext)s",
-        "progress_hooks": [_make_progress_hook(message, msg)],
-        "max_filesize": max_filesize,
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}]
+ydl_opts: yt_dlp._Params = {
+    "format": format_id,
+    "outtmpl": f"{config.output_folder}/{video_title}.%(ext)s",
+    "progress_hooks": [
+        _make_progress_hook(message, msg)
+    ],
+    "max_filesize": max_filesize,
+    "postprocessors": (
+        [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+            }
+        ]
         if audio
-        else [],
-        "socket_timeout": 30,
-        "retries": 10,
-        "fragment_retries": 10,
-        "extractor_retries": 5,
+        else []
+    ),
+    "socket_timeout": 30,
+    "retries": 10,
+    "fragment_retries": 10,
+    "extractor_retries": 5,
 }
     if js_runtime is not None:
         ydl_opts["js_runtimes"] = js_runtime
