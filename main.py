@@ -117,6 +117,16 @@ def is_alibaba_url(url: str) -> bool:
         return False
 
 
+def is_tiktok_url(url: str) -> bool:
+    try:
+        domain = urlparse(url).netloc.lower()
+        if ":" in domain:
+            domain = domain.split(":")[0]
+        return domain == "tiktok.com" or domain.endswith(".tiktok.com")
+    except (ValueError, AttributeError):
+        return False
+
+
 def is_allowed_domain(url):
     """
     Check if URL belongs to allowed domains: YouTube, TikTok, Instagram, Twitter/X, Bluesky
@@ -489,6 +499,91 @@ def _perform_alibaba_download(message, url: str) -> None:
         _cleanup_prefix(download_prefix)
 
 
+def _perform_tiktok_download(
+    message, url: str, audio: bool, format_id: str, forward: bool
+) -> None:
+    """Download a TikTok video via the tikwm.com API, bypassing yt-dlp.
+
+    TikTok changes its anti-bot challenge often, which regularly breaks
+    yt-dlp's TikTok extractor until a patch ships. tikwm.com runs its own
+    scraper against TikTok and hands back direct CDN links, so we try that
+    first. If it's unavailable or doesn't recognise the URL, we fall back
+    to the regular yt-dlp path so the bot keeps working through other,
+    unrelated TikTok bugs.
+    """
+    msg = _reply_start_message(message)
+    download_prefix = round(time.time() * 1000)
+    saved_path: str | None = None
+
+    try:
+        response = ses.get(
+            "https://tikwm.com/api/",
+            params={"url": url, "hd": 1},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+
+        if payload.get("code") != 0:
+            raise ValueError(f"tikwm error: {payload.get('msg')}")
+
+        data = payload.get("data") or {}
+        media_url = (
+            data.get("music") if audio else (data.get("hdplay") or data.get("play"))
+        )
+        if not media_url:
+            raise ValueError("tikwm returned no media url")
+
+        ext = "mp3" if audio else "mp4"
+        saved_path = os.path.join(config.output_folder, f"{download_prefix}.{ext}")
+        if not _download_remote_file(media_url, saved_path):
+            raise ValueError("tikwm media download failed")
+
+        with open(saved_path, "rb") as f:
+            channel_id = message.chat.id
+            if forward:
+                assert forward_to is not None, (
+                    "forward_to is required when forwarding videos"
+                )
+                channel_id = forward_to
+            if audio:
+                bot.send_audio(
+                    channel_id,
+                    f,
+                    reply_to_message_id=message.message_id,
+                    caption=f"݁ ˖Ი𐑼⋆ {url}",
+                )
+            else:
+                bot.send_video(
+                    channel_id,
+                    f,
+                    caption=f"݁ ˖Ი𐑼⋆ {url}",
+                )
+
+        if forward:
+            bot.edit_message_text(
+                chat_id=message.chat.id,
+                message_id=msg.message_id,
+                text="𑁍ܓ Готово, переслала куда просили ₊˚👑‧₊˚⋅",
+            )
+        else:
+            bot.delete_message(message.chat.id, msg.message_id)
+        return
+    except Exception as e:
+        print(f"tikwm failed for {url}, falling back to yt-dlp: {type(e).__name__}: {e}")
+    finally:
+        if saved_path and os.path.exists(saved_path):
+            os.remove(saved_path)
+
+    # tikwm didn't work — fall back to the regular yt-dlp path. It creates
+    # its own progress message, so clean up the one we made above first.
+    try:
+        bot.delete_message(message.chat.id, msg.message_id)
+    except Exception:
+        pass
+    _perform_download(message, url, audio, format_id, forward)
+
+
 def _is_transient_error(e: Exception) -> bool:
     """Check if a yt-dlp error is transient (rate limiting, network issue) and worth retrying."""
     if isinstance(e, DownloadCancelled):
@@ -601,6 +696,7 @@ def enqueue_download(
                 "forward": forward,
                 "user_id": user_id,
                 "alibaba": is_alibaba_url(url),
+                "tiktok": is_tiktok_url(url),
             }
         )
         position = download_queue.qsize()
@@ -846,6 +942,14 @@ def _download_worker() -> None:
         try:
             if task.get("alibaba"):
                 _perform_alibaba_download(task["message"], task["url"])
+            elif task.get("tiktok"):
+                _perform_tiktok_download(
+                    task["message"],
+                    task["url"],
+                    task["audio"],
+                    task["format_id"],
+                    task["forward"],
+                )
             else:
                 _perform_download(
                     task["message"],
