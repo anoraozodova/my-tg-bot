@@ -1,4 +1,4 @@
-yt-dlp[default,curl-cffi]
+yt-dlp[default,curl-cffi]yt-dlp[default,curl-cffi]>=2026.08.31
 pyTelegramBotAPI
 requests
 cryptography
