@@ -676,9 +676,43 @@ def _reply_start_message(message):
         raise
 
 
-if js_runtime is not None:
+def _perform_download(
+    message, url: str, audio: bool, format_id: str, forward: bool
+) -> None:
+    """Download `url` with yt-dlp and send the result back via Telegram.
+
+    Runs on a worker thread (see `_download_worker`). Any exception raised
+    here is caught by the worker, so it's safe to let unexpected errors
+    propagate out of the retry loops below.
+    """
+    msg = _reply_start_message(message)
+    video_title = round(time.time() * 1000)
+    cookie_file: str | None = None
+    user_id = message.from_user.id
+
+    ydl_opts: dict[str, Any] = {
+        "format": "bestaudio/best" if audio else format_id,
+        "outtmpl": f"{config.output_folder}/{video_title}_%(title).50s.%(ext)s",
+        "max_filesize": max_filesize,
+        "progress_hooks": [_make_progress_hook(message, msg)],
+        "noplaylist": True,
+        "quiet": True,
+    }
+
+    if audio:
+        ydl_opts["postprocessors"] = [
+            {
+                "key": "FFmpegExtractAudio",
+                "preferredcodec": "mp3",
+            }
+        ]
+    else:
+        ydl_opts["merge_output_format"] = "mp4"
+
+    if js_runtime is not None:
+        ydl_opts["extractor_args"] = {"youtube": {"jsi": list(js_runtime.keys())}}
+
     try:
-        user_id = message.from_user.id
         db_cursor.execute(
             "SELECT cookie_data FROM user_cookies WHERE user_id = ?", (user_id,)
         )
