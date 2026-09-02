@@ -698,9 +698,8 @@ def _perform_download(
         "retries": 10,
         "fragment_retries": 10,
         "extractor_retries": 5,
-        "impersonate": "chrome",
-    }
-
+        "impersonate": ImpersonateTarget.from_str("chrome"),
+}
     if js_runtime is not None:
         ydl_opts["js_runtimes"] = js_runtime
         ydl_opts["remote_components"] = {"ejs:github"}
